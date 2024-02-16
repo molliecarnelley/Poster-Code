@@ -1,0 +1,645 @@
+---
+title: "Poster code"
+author: "Mollie Carnelley"
+output:
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+We have our SIR Disease Model and we can use a numerical solver to solve the system of differential equations for S, I and R:
+
+```{r}
+# deSolve is used to numerically solve ODEs
+library(deSolve)
+
+# Define the SIR Disease model. Note x1 = alpha_SI, x2 = alpha_IR, x3 = alpha_SR .
+# S = number of susceptible people, I = number of infected people, R = number of recovered people.
+SIR_Disease_Model <- function(t, y, parms) {		
+  with(as.list(parms),{
+    N  <-  y["S"] + y["I"] + y["R"]
+    dS  	=   x3 * y["R"]  -  x1 * y["S"] * y["I"] / N
+    dI		=   x1 * y["S"] * y["I"] / N  - x2 * y["I"]
+    dR    =   x2 * y["I"]  -  x3 * y["R"]
+    res <- c(dS, dI, dR)
+    list(res)
+  })
+}
+```
+
+We set the initial parameters to their midrange values, use an initial configuration for S(0), I(0) and R(0), and use a time period from t=0 to t=100:
+
+```{r}
+# Set input parameters to their midrange values
+parms = c(  x1 = 0.45, x2 = 0.25, x3 = 0.025 )
+
+# Initial configuration for the number of individuals in compartment S, I and R at time t=0
+ystart <- c(S = 850, I = 150, R = 0)				
+
+# Define the time period
+times <- seq(0, 100, length=1001)
+
+```
+
+Solve the differential equations and plot the output:
+
+```{r}
+# Run the lsoda solver to solve the differential equations in the SIR model
+out <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms, maxsteps=20000))  
+
+# "out" has first column time points, 2nd S, 3rd I and 4th R number of individuals in each compartment 
+head(out)
+
+# Plot results of the model output
+plot_run <- function(){
+  plot(out[,"time"],out[,"S"],lwd=6,col=4,ty="l",ylim=c(0,max(out[,-1])),xlab="time (t)",ylab="Number of People")
+  lines(out[,"time"],out[,"I"],lwd=6,col=2)
+  lines(out[,"time"],out[,"R"],lwd=6,col=3)
+  legend("topright",legend=c("S = Susceptible"," I = Infected","R = Recovered"),col=c(4,2,3),lwd=6)
+}
+
+plot_run()
+
+```
+
+
+Bayes Linear emulator without using any partial derivative information:
+
+```{r}
+simple_BL_emulator <- function(x,              # The emulator prediction point
+                               xD,             # The run input locations xD
+                               D,              # The run outputs D = (f(x^1),...,f(x^n))
+                               theta = 1,      # The correlation length
+                               sigma = 1,      # The prior SD sigma sqrt(Var[f(x)])
+                               E_f = 0         # Prior expectation of f: E(f(x)) = 0 
+){
+  
+  # Store length of runs D  
+  n <- length(D)
+  
+  # Define Covariance structure of f(x): Cov[f(x),f(xdash)] 
+  Cov_fx_fxdash <- function(x,xdash) sigma^2 * exp(-sum((x-xdash)^2)/theta^2) 
+  
+  
+  # Define objects needed for Bayes Linear Update Rules 
+  # Create E[D] vector
+  E_D <- rep(E_f,n)
+  
+  # Create Var_D matrix:
+  Var_D <- matrix(0,nrow=n,ncol=n)
+
+  for(i in 1:n) for(j in 1:n) Var_D[i,j] <- Cov_fx_fxdash(xD[i,],xD[j,])  
+  
+  # Create E[f(x)]
+  E_fx <- E_f
+  
+  # Create Var_f(x) 
+  Var_fx <- sigma^2
+  
+  # Create Cov_fx_D row vector
+  Cov_fx_D <- matrix(0,nrow=1,ncol=n)
+
+  for(j in 1:n) Cov_fx_D[1,j] <- Cov_fx_fxdash(x,xD[j,])    
+  
+  
+  # Perform Bayes Linear adjustment to find adjusted expectation and variance of f(x)
+  ED_fx   <-  E_fx + Cov_fx_D %*% solve(Var_D) %*% (D - E_D)   
+  VarD_fx <-  Var_fx - Cov_fx_D %*% solve(Var_D) %*% t(Cov_fx_D)  
+  
+  # Return the emulator adjusted expectation and variance 
+  return(c("ExpD_f(x)"=ED_fx,"VarD_f(x)"=VarD_fx))  
+  
+}
+
+```
+
+Create a 4x4 grid of 16 initial design runs:
+
+```{r}
+D_grid <- c(0.08,0.36,0.64,0.92)
+xD <- as.matrix(expand.grid("x1"=D_grid,"x2"=D_grid))
+
+```
+
+We want to emulate the number of infected individuals at t=10, I(10), over the 2-dimensional input space of $x_1=\alpha_{SI}$ and $x_2=\alpha_{IR}$, keeping $\alpha_{SR}=0.04$. Here $\alpha_{SI} \in [0.1,0.8]$ and $\alpha_{IR} \in [0,0.5]$, so we scale these input ranges to [0,1] for our emulation.
+
+```{r}
+xD_scaled <- cbind("x1"=rep(0,16),"x2"=rep(0,16))
+xD_scaled[,1] <- xD[,1]*0.7+0.1
+xD_scaled[,2] <- xD[,2]*0.5
+```
+
+We evaluate the true SIR model for our 16 design runs and extract the model output for infected individuals at t=10 (this corresponds to the 101st row of the output matrix):
+
+```{r}
+# Perform 16 runs of the SIR model extracting the output for the number of infected individuals at t=10 and store as D 
+D <- NULL
+
+for(i in 1:nrow(xD_scaled)){
+  parms = c( xD_scaled[i,1], xD_scaled[i,2], x3 = 0.04)
+  # Extract the output at t=10, this corresponds to the 101st row 
+  infected <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms, maxsteps=20000)) [101,"I"]
+  D <- c(D,infected)
+  
+}		
+```
+
+Define 50x50 grid of prediction points xP for input into our emulator:
+
+```{r}
+x_grid <- seq(-0.001,1.001,len=50)
+xP <- as.matrix(expand.grid("x1"=x_grid,"x2"=x_grid))
+  
+```
+
+Emulate over this grid of prediction points:
+
+```{r}
+# Evaluate emulator over 50x50=2500 prediction points xP
+em_out <- t(apply(xP,1,simple_BL_emulator,xD=xD,D=D,theta=0.2,sigma=170,E_f=500))   
+head(em_out)
+```
+
+Here is the plotting function for our output:
+
+```{r}
+emul_fill_cont <- function(
+    cont_mat,            # Matrix of values we want contour plot of 
+    cont_levs=NULL,      # Contour levels (NULL: automatic selection)
+    nlev=20,             # Approx no. of contour levels for auto select  
+    plot_xD=TRUE,        # Plot the design runs TRUE or FALSE
+    xD=NULL,             # The design points if needed
+    xD_col="green",      # Colour of design runs
+    x_grid,              # Grid edge locations that define xP
+    ...                  # Extra arguments passed to filled.contour
+){
+  
+  # Define contour levels if necessary 
+  if(is.null(cont_levs)) cont_levs <- pretty(cont_mat,n=nlev)     
+  
+  # Create the filled contour plot 
+  filled.contour(x_grid,x_grid,cont_mat,levels=cont_levs,xlab=expression(x[1]),ylab=expression(x[2]),cex.lab=1.4,...,  
+                 plot.axes={axis(1);axis(2)                 # Sets up plotting in contour box
+                   contour(x_grid,x_grid,cont_mat,add=TRUE,levels=cont_levs,lwd=0.8)   # Plot contour lines
+                   if(plot_xD) points(xD,pch=21,col=1,bg=xD_col,cex=1.5)})  # Plot design points
+}
+
+```
+
+Define some colour schemes to use:
+
+```{r}
+library(viridisLite)
+
+exp_cols <- plasma
+var_cols <-  function(n) hcl.colors(n, "orrd", rev = TRUE)
+diag_cols <- turbo
+```
+
+Extract the emulator outputs and store as matrices:
+
+```{r}
+E_D_fx_mat <- matrix(em_out[,"ExpD_f(x)"],nrow=length(x_grid),ncol=length(x_grid)) 
+Var_D_fx_mat <- matrix(em_out[,"VarD_f(x)"],nrow=length(x_grid),ncol=length(x_grid)) 
+```
+
+Plot the emulator adjusted expectation and variance:
+
+```{r}
+library(latex2exp)
+
+emul_fill_cont(cont_mat=E_D_fx_mat,cont_levs=seq(-50,1000,50),xD=xD,x_grid=x_grid,
+               color.palette=exp_cols,        # this sets the colour scheme
+               main="Emulator Adjusted Expectation E_D[f(x)]")
+
+emul_fill_cont(cont_mat=Var_D_fx_mat,cont_levs=NULL,xD=xD,x_grid=x_grid,
+               color.palette=var_cols,
+               main="Emulator Adjusted Variance Var_D[f(x)]")
+```
+
+In this instance, we can plot the true 2-dimensional output of our SIR model for I(10):
+
+```{r}
+f <- NULL
+for(i in 1:nrow(xP)){
+  
+  parms = c( xP[i,1]*0.7+0.1, xP[i,2]*0.5, x3 = 0.04)
+  out <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms, maxsteps=20000)) [101,"I"]
+  f <-  c(f,out)
+}
+fxP_mat <- matrix(f,nrow=length(x_grid),ncol=length(x_grid)) 
+
+
+
+emul_fill_cont(cont_mat=fxP_mat,cont_levs=seq(-50,1000,50),xD=xD,x_grid=x_grid,
+               color.palette=exp_cols,
+               main="True Computer Model Function f(x)" )
+
+```
+
+We can check our emulator diagnostics:
+
+```{r}
+S_diag_mat <- (E_D_fx_mat - fxP_mat) / sqrt(Var_D_fx_mat)
+
+emul_fill_cont(cont_mat=S_diag_mat,cont_levs=seq(-3,3,0.25),xD=xD,x_grid=x_grid,
+               xD_col="purple",
+               color.palette=diag_cols,
+               main="Emulator Diagnostics S_D[f(x)]")
+```
+
+We can see that the diagnostics look fine here!
+
+Bayes Linear emulator that uses partial derivative information in both directions:
+
+```{r}
+simple_BL_emulator_der<- function(x,              # The emulator prediction point
+                                  xD,             # The run input locations xD
+                                  D,              # The run outputs D = (f(x^1),...,f(x^n))
+                                  theta = 1,      # The correlation lengths
+                                  sigma = 1,      # The prior SD sigma sqrt(Var[f(x)])
+                                  E_f=0,          # Prior expectation of f: E(f(x)) = 0 
+                                  n=16,           # The number of design runs
+                                  n_x1=16,        # The number of x1 partial derivatives 
+                                  n_x2=16         # the number of x2 partial derivatives 
+){
+  
+
+
+  # Define Covariance structure of f(x): Cov[f(x),f(xdash)] 
+  Cov_fx_fxdash <- function(x,xdash) sigma^2 * exp(-sum((x-xdash)^2)/theta^2)
+  
+  # Derivatives here are w.r.t to x1 (horizontal)
+  
+  # Define Covariance structure of f(x): Cov[f'(x),f(xdash)] 
+  Cov_fx_fxdash_dx1 <- function(x,xdash) -2*sigma^2 *(x[1]-xdash[1]) *exp(-sum((x-xdash)^2)/theta^2) /theta^2
+  # Define Covariance structure of f(x): Cov[f(x),f'(xdash)] 
+  Cov_fx_fxdash_dx1dash <- function(x,xdash) 2*sigma^2 *(x[1]-xdash[1]) *exp(-sum((x-xdash)^2)/theta^2)/theta^2
+  # Define Covariance structure of f(x): Cov[f'(x),f'(xdash)] 
+  Cov_fx_fxdash_dx1dx1dash <- function(x,xdash) -4*sigma^2 *(x[1]-xdash[1])^2 *exp(-sum((x-xdash)^2)/theta^2)/theta^4 + 2*sigma^2*exp(-sum((x-xdash)^2)/theta^2) /theta^2
+  
+  # Derivatives here are w.r.t x2 (vertical)
+  
+  # Define Covariance structure of f(x): Cov[f'(x),f(xdash)] 
+  Cov_fx_fxdash_dx2 <- function(x,xdash) -2*sigma^2 *(x[2]-xdash[2]) *exp(-sum((x-xdash)^2)/theta^2) /theta^2
+  # Define Covariance structure of f(x): Cov[f(x),f'(xdash)] 
+  Cov_fx_fxdash_dx2dash <- function(x,xdash) 2*sigma^2 *(x[2]-xdash[2]) *exp(-sum((x-xdash)^2)/theta^2)/theta^2
+  # Define Covariance structure of f(x): Cov[f'(x),f'(xdash)] 
+  Cov_fx_fxdash_dx2dx2dash <- function(x,xdash) -4*sigma^2 *(x[2]-xdash[2])^2 *exp(-sum((x-xdash)^2)/theta^2)/theta^4 + 2*sigma^2*exp(-sum((x-xdash)^2)/theta^2) /theta^2
+  
+  # Mixed partial derivative covariance structure 
+  Cov_mixed <- function(x,xdash) -4*sigma^2 *(x[2]-xdash[2])*(x[1]-xdash[1]) *exp(-sum((x-xdash)^2)/theta^2)/theta^4
+  
+
+  
+  # Create E[D] vector
+  # Give the derivative information zero expectation a priori
+  E_D <- c(rep(E_f,n),rep(0,n_x1),rep(0,n_x2))
+  
+  # Create Var_D matrix
+  Var_D <- matrix(0,nrow=n+n_x1+n_x2,ncol=n+n_x1+n_x2)
+ 
+  # Keep this part of the matrix the same as in the non-derivative information case
+  for(i in 1:n) for(j in 1:n) Var_D[i,j] <- Cov_fx_fxdash(xD[i,],xD[j,]) 
+  
+  # Include the derivatives w.r.t x1
+  for(i in 1:n) for(j in (n+1):(n+n_x1)) Var_D[i,j] <- Cov_fx_fxdash_dx1dash(xD[i,],xD[j,])  
+  
+  for(i in (n+1):(n+n_x1)) for(j in 1:n) Var_D[i,j] <-Cov_fx_fxdash_dx1(xD[i,],xD[j,])  
+  
+  for(i in (n+1):(n+n_x1)) for(j in (n+1):(n+n_x1) ) Var_D[i,j] <-Cov_fx_fxdash_dx1dx1dash(xD[i,],xD[j,]) 
+  
+  
+  # Now include the derivatives w.r.t x2
+  for(i in 1:n) for(j in (n+n_x1+1):(n+n_x1+n_x2)) Var_D[i,j] <- Cov_fx_fxdash_dx2dash(xD[i,],xD[j,])  
+  
+  for(i in (n+n_x1+1):(n+n_x1+n_x2)) for(j in 1:n)  Var_D[i,j] <-Cov_fx_fxdash_dx2(xD[i,],xD[j,])  
+  
+  for(i in (n+n_x1+1):(n+n_x1+n_x2)) for(j in (n+n_x1+1):(n+n_x1+n_x2) ) Var_D[i,j] <- Cov_fx_fxdash_dx2dx2dash(xD[i,],xD[j,])
+  
+  for(i in (n+n_x1+1):(n+n_x1+n_x2)) for(j in (n+1):(n+n_x1)) Var_D[i,j] <- Cov_mixed(xD[i,],xD[j,])
+    
+  for(i in (n+1):(n+n_x1))   for(j in (n+n_x1+1):(n+n_x1+n_x2)) Var_D[i,j] <- Cov_mixed(xD[i,],xD[j,])
+
+  # Create E[f(x)]
+  E_fx <- E_f
+  
+  # Create Var_f(x) 
+  Var_fx <- sigma^2
+  
+  # Create Cov_fx_D row vector
+  Cov_fx_D <- matrix(0,nrow=1,ncol=n+n_x1+n_x2)
+  
+  # Covariance for our known runs
+  for(j in 1:n) Cov_fx_D[1,j] <- Cov_fx_fxdash(x,xD[j,])    
+  # Covariance for x1 partial derivatives
+  for(j in (n+1):(n+n_x1)) Cov_fx_D[1,j] <- Cov_fx_fxdash_dx1dash(x,xD[j,])
+  # Covariance for x2 partial derivatives
+  for(j in (n+n_x1+1):(n+n_x1+n_x2)) Cov_fx_D[1,j] <- Cov_fx_fxdash_dx2dash(x,xD[j,])
+  
+
+  # Perform Bayes Linear adjustment to find adjusted expectation and variance of f(x)
+  ED_fx   <-  E_fx + Cov_fx_D %*% solve(Var_D) %*% (D - E_D)   
+  VarD_fx <-  Var_fx - Cov_fx_D %*% solve(Var_D) %*% t(Cov_fx_D)  
+  
+  # Return the emulator adjusted expectation and variance
+
+  return(c("ExpD_f(x)"=ED_fx,"VarD_f(x)"=VarD_fx))  
+
+}
+
+```
+
+Calculating the partial derivatives in the $x_1$ (horizontal) direction using a numerical approximation:
+
+```{r}
+
+x1_der <- NULL
+for(i in 1:nrow(xD)){
+  # Use a point close by either side of each known run and then scale this back to its original scale for input into the SIR model
+  parms1 = c( (xD[i,1]-0.00001)*0.7+0.1, xD_scaled[i,2], x3 = 0.04)
+  infected1 <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms1, maxsteps=20000)) [101,"I"]
+  parms2 = c(  (xD[i,1]+0.00001)*0.7+0.1, xD_scaled[i,2], x3 = 0.04)
+  infected2 <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms2, maxsteps=20000)) [101,"I"]
+  # Calculate the derivative between the output of these points
+  x1_der <- c(x1_der,(infected2-infected1)/0.00002)
+  
+}		
+```
+
+Do the same for the $x_2$ (vertical) direction:
+```{r}
+x2_der <- NULL
+for(i in 1:nrow(xD)){
+    # Use a point close by either side of each known run and then scale this back to its original scale for input into the SIR model
+  parms1 = c( xD_scaled[i,1], (xD[i,2]-0.00001)*0.5, x3 = 0.04)
+  infected1 <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms1, maxsteps=20000)) [101,"I"]
+  parms2 = c( xD_scaled[i,1],(xD[i,2]+0.00001)*0.5, x3 = 0.04)
+  infected2 <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms2, maxsteps=20000)) [101,"I"]
+  # Calculate the derivative between these points
+  x2_der <- c(x2_der,(infected2-infected1)/0.00002)
+  
+}	
+```
+
+
+Adding this information to our D and xD sets, then emulating using all of this derivative information:
+```{r}
+# Update sets with derivative information
+D <- c(D,x1_der,x2_der)
+xD <- rbind(xD,xD,xD)
+em_out <- t(apply(xP,1,simple_BL_emulator_der,xD=xD,D=D,theta=0.2,sigma=170,E_f=500))
+
+E_D_fx_mat <- matrix(em_out[,"ExpD_f(x)"],nrow=length(x_grid),ncol=length(x_grid)) 
+Var_D_fx_mat <- matrix(em_out[,"VarD_f(x)"],nrow=length(x_grid),ncol=length(x_grid)) 
+
+emul_fill_cont(cont_mat=E_D_fx_mat,cont_levs=seq(-50,1000,50),xD=xD,x_grid=x_grid,
+               color.palette=exp_cols, 
+               main="Emulator Adjusted Expectation E_D[f(x)]")
+
+
+emul_fill_cont(cont_mat=Var_D_fx_mat,cont_levs=NULL,xD=xD,x_grid=x_grid,
+               color.palette=var_cols,
+               main="Emulator Adjusted Variance Var_D[f(x)]")
+
+```
+
+We can consider what would happen if we emulated just using all of derivative information in the $x_1$ (horizontal) direction:
+
+```{r}
+simple_BL_emulator_der_x1 <- function(x,              # The emulator prediction point
+                                      xD,             # The run input locations xD
+                                      D,              # The run outputs D = (f(x^1),...,f(x^n))
+                                      theta = 1,      # The correlation lengths
+                                      sigma = 1,      # The prior SD sigma sqrt(Var[f(x)])
+                                      E_f = 0,        # Prior expectation of f: E(f(x)) = 0 
+                                      n_x1 = 16       # The number of x1 derivatives 
+){
+  
+  # Store length of runs D  
+  n <- 16
+  
+  
+  # Define Covariance structure of f(x): Cov[f(x),f(xdash)] 
+  Cov_fx_fxdash <- function(x,xdash) sigma^2 * exp(-sum((x-xdash)^2)/theta^2)
+  
+  # Derivatives are w.r.t x1:
+  
+  # Define Covariance structure of f(x): Cov[f'(x),f(xdash)] 
+  Cov_fx_fxdash_dx1 <- function(x,xdash) -2*sigma^2 *(x[1]-xdash[1]) *exp(-sum((x-xdash)^2)/theta^2) /theta^2
+  # Define Covariance structure of f(x): Cov[f(x),f'(xdash)] 
+  Cov_fx_fxdash_dx1dash <- function(x,xdash) 2*sigma^2 *(x[1]-xdash[1]) *exp(-sum((x-xdash)^2)/theta^2)/theta^2
+  # Define Covariance structure of f(x): Cov[f'(x),f'(xdash)] 
+  Cov_fx_fxdash_dx1dx1dash <- function(x,xdash) -4*sigma^2 *(x[1]-xdash[1])^2 *exp(-sum((x-xdash)^2)/theta^2)/theta^4 + 2*sigma^2*exp(-sum((x-xdash)^2)/theta^2) /theta^2
+  
+  
+ 
+  # Create E[D] vector
+  # Give the x1 partial derivatives zero expectation a priori
+  E_D <- c(rep(E_f,n), rep(0,n_x1))
+  
+  # Create Var_D matrix:
+  Var_D <- matrix(0,nrow=n+n_x1,ncol=n+n_x1)
+  
+  # Keep this part of the matrix the same as emulating without derivative information
+  for(i in 1:n) for(j in 1:n) Var_D[i,j] <- Cov_fx_fxdash(xD[i,],xD[j,])  
+  
+  # Including the x1 partial derivatives
+  for(i in 1:n) for(j in (n+1):(n+n_x1)) Var_D[i,j] <- Cov_fx_fxdash_dx1dash(xD[i,],xD[j,])  
+  
+  for(j in 1:n) for(i in (n+1):(n+n_x1)) Var_D[i,j] <-Cov_fx_fxdash_dx1(xD[i,],xD[j,])  
+  
+  for(i in (n+1):(n+n_x1)) for(j in (n+1):(n+n_x1) )    Var_D[i,j] <-Cov_fx_fxdash_dx1dx1dash(xD[i,],xD[j,]) 
+  
+  
+  
+  # Create E[f(x)]
+  E_fx <- E_f
+  
+  # Create Var_f(x) 
+  Var_fx <- sigma^2
+  
+  # Create Cov_fx_D row vector
+  Cov_fx_D <- matrix(0,nrow=1,ncol=n+n_x1)
+  for(j in 1:n) Cov_fx_D[1,j] <- Cov_fx_fxdash(x,xD[j,])    
+  
+  # Include the x1 partial derivative information
+  for(j in (n+1):(n+n_x1)) Cov_fx_D[1,j] <- Cov_fx_fxdash_dx1dash(x,xD[j,])
+
+  
+  # Perform Bayes Linear adjustment to find adjusted expectation and variance of f(x)
+  ED_fx   <-  E_fx + Cov_fx_D %*% solve(Var_D) %*% (D - E_D)   
+  VarD_fx <-  Var_fx - Cov_fx_D %*% solve(Var_D) %*% t(Cov_fx_D)  
+
+  # Return emulator adjusted expectation and variance 
+  return(c("ExpD_f(x)"=ED_fx,"VarD_f(x)"=VarD_fx))  
+  
+  
+}
+```
+
+Now emulate and plot the emulator adjusted expectation and variance using derivatives for all 16 known runs in the $x_1$ direction:
+
+```{r}
+# Our grid on initial design runs
+D_grid <- c(0.08,0.36,0.64,0.92)
+xD <- as.matrix(expand.grid("x1"=D_grid,"x2"=D_grid))
+
+xD_scaled <- cbind("x1"=rep(0,16),"x2"=rep(0,16))
+xD_scaled[,1] <- xD[,1]*0.7+0.1
+xD_scaled[,2] <- xD[,2]*0.5
+
+# Perform 16 runs of the SIR model extracting the output for the number of infected individuals at t=10 and store as D 
+D <- NULL
+
+for(i in 1:nrow(xD_scaled)){
+  parms = c( xD_scaled[i,1], xD_scaled[i,2], x3 = 0.04)
+  infected <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms, maxsteps=20000)) [101,"I"]
+  D <- c(D,infected)
+  
+}		
+
+# Define 50x50 grid of prediction points xP for emulator evaluation
+x_grid <- seq(-0.001,1.001,len=50)
+xP <- as.matrix(expand.grid("x1"=x_grid,"x2"=x_grid))
+
+# Update sets with x1 derivative information 
+D <- c(D,x1_der)
+xD <- rbind(xD,xD)
+em_out <- t(apply(xP,1,simple_BL_emulator_der_x1,xD=xD,D=D,n_x1=16,theta=0.2,sigma=170,E_f=500))
+
+# Extract emulator outputs as matrices
+E_D_fx_mat <- matrix(em_out[,"ExpD_f(x)"],nrow=length(x_grid),ncol=length(x_grid)) 
+Var_D_fx_mat <- matrix(em_out[,"VarD_f(x)"],nrow=length(x_grid),ncol=length(x_grid)) 
+
+emul_fill_cont(cont_mat=E_D_fx_mat,cont_levs=seq(-50,1000,50),xD=xD,x_grid=x_grid,
+               color.palette=exp_cols,   
+               main="Emulator Adjusted Expectation E_D[f(x)]")
+
+
+emul_fill_cont(cont_mat=Var_D_fx_mat,cont_levs=NULL,xD=xD,x_grid=x_grid,
+               color.palette=var_cols,
+               main="Emulator Adjusted Variance Var_D[f(x)]")
+```
+
+
+
+Similarly, an emulator which only includes all of the partial derivatives in the $x_2$ direction:
+
+```{r}
+simple_BL_emulator_der_x2 <- function(x,             # The emulator prediction point
+                                     xD,             # The run input locations xD
+                                     D,              # The run outputs D = (f(x^1),...,f(x^n))
+                                     theta = 1,      # The correlation lengths
+                                     sigma = 1,      # The prior SD sigma sqrt(Var[f(x)])
+                                     E_f = 0 ,       # Prior expectation of f: E(f(x)) = 0 
+                                     n_x2 = 16       # The number of x2 derivatives 
+){
+  
+  # Store length of runs D  
+  n <- 16
+  
+  # Define Covariance structure of f(x): Cov[f(x),f(xdash)] 
+  Cov_fx_fxdash <- function(x,xdash) sigma^2 * exp(-sum((x-xdash)^2)/theta^2)
+ 
+  
+  # Derivatives here are w.r.t x2:
+  
+  # Define Covariance structure of f(x): Cov[f'(x),f(xdash)] 
+  Cov_fx_fxdash_dx2 <- function(x,xdash) -2*sigma^2 *(x[2]-xdash[2]) *exp(-sum((x-xdash)^2)/theta^2) /theta^2
+  # Define Covariance structure of f(x): Cov[f(x),f'(xdash)] 
+  Cov_fx_fxdash_dx2dash <- function(x,xdash) 2*sigma^2 *(x[2]-xdash[2]) *exp(-sum((x-xdash)^2)/theta^2)/theta^2
+  # Define Covariance structure of f(x): Cov[f'(x),f'(xdash)] 
+  Cov_fx_fxdash_dx2dx2dash <- function(x,xdash) -4*sigma^2 *(x[2]-xdash[2])^2 *exp(-sum((x-xdash)^2)/theta^2)/theta^4 + 2*sigma^2*exp(-sum((x-xdash)^2)/theta^2) /theta^2
+  
+  
+  # Create E[D] vector
+  # Give the x2 partial derivatives zero expectation a priori
+  E_D <- c(rep(E_f,n),rep(0,n_x2))
+  
+  # Create Var_D matrix:
+  Var_D <- matrix(0,nrow=n+n_x2,ncol=n+n_x2)
+  
+  # Keep this part of the matrix the same as emulating without derivative information
+  for(i in 1:n) for(j in 1:n) Var_D[i,j] <- Cov_fx_fxdash(xD[i,],xD[j,])  
+  
+  # Now include the x2 partial derivatives 
+  for(i in 1:n) for(j in (n+1):(n+n_x2)) Var_D[i,j] <- Cov_fx_fxdash_dx2dash(xD[i,],xD[j,])  
+  
+  for(j in 1:n) for(i in (n+1):(n+n_x2)) Var_D[i,j] <-Cov_fx_fxdash_dx2(xD[i,],xD[j,])  
+  
+  for(i in (n+1):(n+n_x2)) for(j in (n+1):(n+n_x2) )    Var_D[i,j] <-Cov_fx_fxdash_dx2dx2dash(xD[i,],xD[j,]) 
+  
+  
+  # Create E[f(x)]
+  E_fx <- E_f
+  
+  # Create Var_f(x) 
+  Var_fx <- sigma^2
+  
+  # Create Cov_fx_D row vector
+  Cov_fx_D <- matrix(0,nrow=1,ncol=n+n_x2)
+  
+  for(j in 1:n) Cov_fx_D[1,j] <- Cov_fx_fxdash(x,xD[j,])    
+  
+  for(j in (n+1):(n+n_x2)) Cov_fx_D[1,j] <- Cov_fx_fxdash_dx2dash(x,xD[j,])
+
+  
+  # Perform Bayes Linear adjustment to find Adjusted Expectation and Variance of f(x) 
+  ED_fx   <-  E_fx + Cov_fx_D %*% solve(Var_D) %*% (D - E_D)   
+  VarD_fx <-  Var_fx - Cov_fx_D %*% solve(Var_D) %*% t(Cov_fx_D)  
+
+  # Return emulator adjusted expectation and variance 
+  return(c("ExpD_f(x)"=ED_fx,"VarD_f(x)"=VarD_fx))  
+  
+}
+```
+
+Now emulate and plot the emulator adjusted expectation and variance using derivatives in the $x_2$ direction for all 16 known runs:
+
+```{r}
+D_grid <- c(0.08,0.36,0.64,0.92)
+xD <- as.matrix(expand.grid("x1"=D_grid,"x2"=D_grid))
+
+xD_scaled <- cbind("x1"=rep(0,16),"x2"=rep(0,16))
+xD_scaled[,1] <- xD[,1]*0.7+0.1
+xD_scaled[,2] <- xD[,2]*0.5
+
+# Perform 16 runs of the SIR model extracting the output for the number of infected individuals at t=10 and store as D 
+D <- NULL
+
+for(i in 1:nrow(xD_scaled)){
+  parms = c( xD_scaled[i,1], xD_scaled[i,2], x3 = 0.04)
+  infected <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms, maxsteps=20000)) [101,"I"]
+  D <- c(D,infected)
+  
+}		
+
+# Define 50x50 grid of prediction points xP for emulator evaluation 
+x_grid <- seq(-0.001,1.001,len=50)
+xP <- as.matrix(expand.grid("x1"=x_grid,"x2"=x_grid))
+
+
+# Update the sets with x2 derivative information
+D <- c(D,x2_der)
+xD <- rbind(xD,xD)
+em_out <- t(apply(xP,1,simple_BL_emulator_der_x2,xD=xD,D=D,theta=0.2,sigma=170,E_f=500))
+
+# Store the emulator output as matrices 
+E_D_fx_mat <- matrix(em_out[,"ExpD_f(x)"],nrow=length(x_grid),ncol=length(x_grid)) 
+Var_D_fx_mat <- matrix(em_out[,"VarD_f(x)"],nrow=length(x_grid),ncol=length(x_grid)) 
+
+emul_fill_cont(cont_mat=E_D_fx_mat,cont_levs=seq(-50,1000,50),xD=xD,x_grid=x_grid,
+               color.palette=exp_cols,     
+               main="Emulator Adjusted Expectation E_D[f(x)]")
+
+
+emul_fill_cont(cont_mat=Var_D_fx_mat,cont_levs=NULL,xD=xD,x_grid=x_grid,
+               color.palette=var_cols,
+               main="Emulator Adjusted Variance Var_D[f(x)]")
+```
+
+
