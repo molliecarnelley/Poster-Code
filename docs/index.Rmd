@@ -10,7 +10,7 @@ knitr::opts_chunk$set(echo = TRUE)
 ```
 
 
-We have our SIR Disease Model and we can use a numerical solver to solve the system of differential equations for S, I and R:
+We employ a numerical solver to solve the system of differential equations in the SIRS model:
 
 ```{r}
 # deSolve is used to numerically solve ODEs
@@ -30,7 +30,7 @@ SIR_Disease_Model <- function(t, y, parms) {
 }
 ```
 
-We set the initial parameters to their midrange values, use an initial configuration for S(0), I(0) and R(0), and use a time period from t=0 to t=100:
+We set the initial parameters to their midrange values, use an initial configuration for S(0), I(0) and R(0), and a time period from t=0 to t=100:
 
 ```{r}
 # Set input parameters to their midrange values
@@ -83,7 +83,6 @@ simple_BL_emulator <- function(x,              # The emulator prediction point
   # Define Covariance structure of f(x): Cov[f(x),f(xdash)] 
   Cov_fx_fxdash <- function(x,xdash) sigma^2 * exp(-sum((x-xdash)^2)/theta^2) 
   
-  
   # Define objects needed for Bayes Linear Update Rules 
   # Create E[D] vector
   E_D <- rep(E_f,n)
@@ -132,7 +131,7 @@ xD_scaled[,1] <- xD[,1]*0.7+0.1
 xD_scaled[,2] <- xD[,2]*0.5
 ```
 
-We evaluate the true SIR model for our 16 design runs and extract the model output for infected individuals at t=10 (this corresponds to the 101st row of the output matrix):
+We evaluate the true SIRS model for our 16 design runs and extract the model output for infected individuals at t=10 (this corresponds to the 101st row of the output matrix):
 
 ```{r}
 # Perform 16 runs of the SIR model extracting the output for the number of infected individuals at t=10 and store as D 
@@ -189,7 +188,7 @@ emul_fill_cont <- function(
 
 ```
 
-Define some colour schemes to use:
+Define colour schemes to use:
 
 ```{r}
 library(viridisLite)
@@ -253,7 +252,7 @@ emul_fill_cont(cont_mat=S_diag_mat,cont_levs=seq(-3,3,0.25),xD=xD,x_grid=x_grid,
 
 We can see that the diagnostics look fine here!
 
-Bayes Linear emulator that uses partial derivative information in both directions:
+Now we have a Bayes Linear emulator which uses partial derivative information in both directions:
 
 ```{r}
 simple_BL_emulator_der<- function(x,              # The emulator prediction point
@@ -371,6 +370,7 @@ for(i in 1:nrow(xD)){
 ```
 
 Do the same for the $x_2$ (vertical) direction:
+
 ```{r}
 x2_der <- NULL
 for(i in 1:nrow(xD)){
@@ -387,6 +387,7 @@ for(i in 1:nrow(xD)){
 
 
 Adding this information to our D and xD sets, then emulating using all of this derivative information:
+
 ```{r}
 # Update sets with derivative information
 D <- c(D,x1_der,x2_der)
@@ -407,7 +408,7 @@ emul_fill_cont(cont_mat=Var_D_fx_mat,cont_levs=NULL,xD=xD,x_grid=x_grid,
 
 ```
 
-We can consider what would happen if we emulated just using all of derivative information in the $x_1$ (horizontal) direction:
+Bayes Linear emulator that only uses derivative information in the $x_1$ (horizontal) direction:
 
 ```{r}
 simple_BL_emulator_der_x1 <- function(x,              # The emulator prediction point
@@ -481,7 +482,7 @@ simple_BL_emulator_der_x1 <- function(x,              # The emulator prediction 
 }
 ```
 
-Now emulate and plot the emulator adjusted expectation and variance using derivatives for all 16 known runs in the $x_1$ direction:
+Now emulate and plot the emulator adjusted expectation and variance using knowledge of the partial derivatives in the $x_1$ direction for all 16 design runs:
 
 ```{r}
 # Our grid on initial design runs
