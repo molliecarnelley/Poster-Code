@@ -16,9 +16,9 @@ We employ a numerical solver to solve the system of differential equations in th
 # deSolve is used to numerically solve ODEs
 library(deSolve)
 
-# Define the SIR Disease model. Note x1 = alpha_SI, x2 = alpha_IR, x3 = alpha_SR .
+# Define the SIRS Disease model. Note x1 = alpha_SI, x2 = alpha_IR, x3 = alpha_SR .
 # S = number of susceptible people, I = number of infected people, R = number of recovered people.
-SIR_Disease_Model <- function(t, y, parms) {		
+SIRS_Disease_Model <- function(t, y, parms) {		
   with(as.list(parms),{
     N  <-  y["S"] + y["I"] + y["R"]
     dS  	=   x3 * y["R"]  -  x1 * y["S"] * y["I"] / N
@@ -47,8 +47,8 @@ times <- seq(0, 100, length=1001)
 Solve the differential equations and plot the output:
 
 ```{r}
-# Run the lsoda solver to solve the differential equations in the SIR model
-out <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms, maxsteps=20000))  
+# Run the lsoda solver to solve the differential equations in the SIRS model
+out <- as.matrix(lsoda(ystart, times, SIRS_Disease_Model, parms, maxsteps=20000))  
 
 # "out" has first column time points, 2nd S, 3rd I and 4th R number of individuals in each compartment 
 head(out)
@@ -134,13 +134,13 @@ xD_scaled[,2] <- xD[,2]*0.5
 We evaluate the true SIRS model for our 16 design runs and extract the model output for infected individuals at t=10 (this corresponds to the 101st row of the output matrix):
 
 ```{r}
-# Perform 16 runs of the SIR model extracting the output for the number of infected individuals at t=10 and store as D 
+# Perform 16 runs of the SIRS model extracting the output for the number of infected individuals at t=10 and store as D 
 D <- NULL
 
 for(i in 1:nrow(xD_scaled)){
   parms = c( xD_scaled[i,1], xD_scaled[i,2], x3 = 0.04)
   # Extract the output at t=10, this corresponds to the 101st row 
-  infected <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms, maxsteps=20000)) [101,"I"]
+  infected <- as.matrix(lsoda(ystart, times, SIRS_Disease_Model, parms, maxsteps=20000)) [101,"I"]
   D <- c(D,infected)
   
 }		
@@ -219,14 +219,14 @@ emul_fill_cont(cont_mat=Var_D_fx_mat,cont_levs=NULL,xD=xD,x_grid=x_grid,
                main="Emulator Adjusted Variance Var_D[f(x)]")
 ```
 
-In this instance, we can plot the true 2-dimensional output of our SIR model for I(10):
+In this instance, we can plot the true 2-dimensional output of our SIRS model for I(10):
 
 ```{r}
 f <- NULL
 for(i in 1:nrow(xP)){
   
   parms = c( xP[i,1]*0.7+0.1, xP[i,2]*0.5, x3 = 0.04)
-  out <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms, maxsteps=20000)) [101,"I"]
+  out <- as.matrix(lsoda(ystart, times, SIRS_Disease_Model, parms, maxsteps=20000)) [101,"I"]
   f <-  c(f,out)
 }
 fxP_mat <- matrix(f,nrow=length(x_grid),ncol=length(x_grid)) 
@@ -358,11 +358,11 @@ Calculating the partial derivatives in the $x_1$ (horizontal) direction using a 
 
 x1_der <- NULL
 for(i in 1:nrow(xD)){
-  # Use a point close by either side of each known run and then scale this back to its original scale for input into the SIR model
+  # Use a point close by either side of each known run and then scale this back to its original scale for input into the SIRS model
   parms1 = c( (xD[i,1]-0.00001)*0.7+0.1, xD_scaled[i,2], x3 = 0.04)
-  infected1 <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms1, maxsteps=20000)) [101,"I"]
+  infected1 <- as.matrix(lsoda(ystart, times, SIRS_Disease_Model, parms1, maxsteps=20000)) [101,"I"]
   parms2 = c(  (xD[i,1]+0.00001)*0.7+0.1, xD_scaled[i,2], x3 = 0.04)
-  infected2 <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms2, maxsteps=20000)) [101,"I"]
+  infected2 <- as.matrix(lsoda(ystart, times, SIRS_Disease_Model, parms2, maxsteps=20000)) [101,"I"]
   # Calculate the derivative between the output of these points
   x1_der <- c(x1_der,(infected2-infected1)/0.00002)
   
@@ -374,11 +374,11 @@ Do the same for the $x_2$ (vertical) direction:
 ```{r}
 x2_der <- NULL
 for(i in 1:nrow(xD)){
-    # Use a point close by either side of each known run and then scale this back to its original scale for input into the SIR model
+    # Use a point close by either side of each known run and then scale this back to its original scale for input into the SIRS model
   parms1 = c( xD_scaled[i,1], (xD[i,2]-0.00001)*0.5, x3 = 0.04)
-  infected1 <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms1, maxsteps=20000)) [101,"I"]
+  infected1 <- as.matrix(lsoda(ystart, times, SIRS_Disease_Model, parms1, maxsteps=20000)) [101,"I"]
   parms2 = c( xD_scaled[i,1],(xD[i,2]+0.00001)*0.5, x3 = 0.04)
-  infected2 <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms2, maxsteps=20000)) [101,"I"]
+  infected2 <- as.matrix(lsoda(ystart, times, SIRS_Disease_Model, parms2, maxsteps=20000)) [101,"I"]
   # Calculate the derivative between these points
   x2_der <- c(x2_der,(infected2-infected1)/0.00002)
   
@@ -493,12 +493,12 @@ xD_scaled <- cbind("x1"=rep(0,16),"x2"=rep(0,16))
 xD_scaled[,1] <- xD[,1]*0.7+0.1
 xD_scaled[,2] <- xD[,2]*0.5
 
-# Perform 16 runs of the SIR model extracting the output for the number of infected individuals at t=10 and store as D 
+# Perform 16 runs of the SIRS model extracting the output for the number of infected individuals at t=10 and store as D 
 D <- NULL
 
 for(i in 1:nrow(xD_scaled)){
   parms = c( xD_scaled[i,1], xD_scaled[i,2], x3 = 0.04)
-  infected <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms, maxsteps=20000)) [101,"I"]
+  infected <- as.matrix(lsoda(ystart, times, SIRS_Disease_Model, parms, maxsteps=20000)) [101,"I"]
   D <- c(D,infected)
   
 }		
@@ -609,12 +609,12 @@ xD_scaled <- cbind("x1"=rep(0,16),"x2"=rep(0,16))
 xD_scaled[,1] <- xD[,1]*0.7+0.1
 xD_scaled[,2] <- xD[,2]*0.5
 
-# Perform 16 runs of the SIR model extracting the output for the number of infected individuals at t=10 and store as D 
+# Perform 16 runs of the SIRS model extracting the output for the number of infected individuals at t=10 and store as D 
 D <- NULL
 
 for(i in 1:nrow(xD_scaled)){
   parms = c( xD_scaled[i,1], xD_scaled[i,2], x3 = 0.04)
-  infected <- as.matrix(lsoda(ystart, times, SIR_Disease_Model, parms, maxsteps=20000)) [101,"I"]
+  infected <- as.matrix(lsoda(ystart, times, SIRS_Disease_Model, parms, maxsteps=20000)) [101,"I"]
   D <- c(D,infected)
   
 }		
